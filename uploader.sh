@@ -35,12 +35,17 @@
 # Requirements:
 #
 # - curl
-# - xclip
-# - zenity
+# uploader.sh
+# Giancarlo Birello <giancarlo.birello@gmail.com>
+#
+
+
+
 
 # config parameters
-baseURL="http://localhost/oc"
-uploadTarget="instant links"
+baseURL="https://ocloud.to.cnr.it"
+uploadTarget=$1
+localDir=$2
 username=""
 password=""
 # if you use a self signed ssl cert you can specify here the path to your root
@@ -53,15 +58,15 @@ FALSE=1
 
 webdavURL="$baseURL/remote.php/webdav"
 url=$(echo "$webdavURL/$uploadTarget" | sed 's/\ /%20/g')
-shareAPI="$baseURL/ocs/v1.php/apps/files_sharing/api/v1/shares"
+
 curlOpts=""
 if [ -n "$cacert" ]; then
     curlOpts="$curlOpts --cacert $cacert"
 fi
 
 # check if base dir for file upload exists
-baseDirExists() {
-    if curl -u "$username":"$password" --output /dev/null $curlOpts --silent --head --fail "$url"; then
+baseDirNotFound() {
+    if curl -u "$username":"$password" $curlOpts --silent --head --fail "$url"; then
         return $FALSE
     fi
     return $TRUE
@@ -70,28 +75,9 @@ baseDirExists() {
 checkCredentials() {
     curl -u "$username":"$password" $curlOpts --output /dev/null --silent --fail "$webdavURL"
     if [ $? != 0 ]; then
-        zenity --error --title="ownCloud Public Link Creator" --text="Username or password does not match"
+        echo "Username or password does not match"
         exit 1
     fi
-}
-
-# upload files, first parameter will be the upload target from the second
-# parameter on we have the list of files
-uploadFiles() {
-    for filePath in "${@:2}"
-    do
-        basename=$(basename "$filePath")
-        basename=$(echo "$basename" | sed 's/\ /%20/g')
-        if [ -f "$filePath" ]; then
-            curl -u "$username":"$password" $curlOpts -T "$filePath" "$1/$basename"
-            count=$(($count+1))
-            echo $(($count*100/$numOfFiles)) >&3;
-        else
-            curl -u "$username":"$password" $curlOpts -X MKCOL "$1/$basename"
-            uploadDirectory "$1/$basename" "$filePath"
-        fi
-    done
-    return $TRUE
 }
 
 # upload a directory recursively, first parameter contains the upload target
@@ -101,41 +87,21 @@ uploadDirectory() {
         filePath=$(basename "$filePath")
         urlencodedFilePath=$(echo "$filePath" | sed 's/\ /%20/g')
         if [ -d "$2/$filePath" ]; then
+		  echo "Make Directory -> "$filePath
             curl -u "$username":"$password" $curlOpts -X MKCOL "$1/$urlencodedFilePath"
             uploadDirectory "$1/$urlencodedFilePath" "$2/$filePath"
         else
-            curl -u "$username":"$password" $curlOpts -T "$2/$filePath" "$1/$urlencodedFilePath"
-            count=$(($count+1))
-            echo $(($count*100/$numOfFiles)) >&3;
+		  echo "Uploading ""$2/$filePath"
+		  curl -u "$username":"$password" $curlOpts -T "$2/$filePath" "$1/$urlencodedFilePath"
         fi
     done < <(find "$2" -mindepth 1 -maxdepth 1)
 
 }
 
-# create public link share, first parameter contains the path of the shared file/folder
-createShare() {
-    result=$(curl -u "$username":"$password" $curlOpts --silent "$shareAPI" -d path="$1" -d shareType=3)
-    shareLink=$(echo $result | sed -e 's/.*<url>\(.*\)<\/url>.*/\1/')
-    shareLink=$(echo $shareLink | sed 's/\&amp;/\&/')
-    echo $shareLink | xclip -sel clip
-    return $TRUE
-
-}
-
 # if no username/password is set in the script we ask the user to enter them
 askForPassword() {
-    ENTRY=`zenity --password --username --title="ownCloud Public Link Creator"`
-
-    case $? in
-        0)
-	    username=`echo $ENTRY | cut -d'|' -f1`
-	    password=`echo $ENTRY | cut -d'|' -f2`
-	    ;;
-        1)
-            exit 0;;
-        -1)
-            exit 1;;
-    esac
+	read -p "Username:" username
+	read -s -p "Password:" password
 }
 
 if [ -z $password ] || [ -z $username ]; then
@@ -144,31 +110,15 @@ fi
 
 checkCredentials
 
-exec 3> >(zenity --progress --title="ownCloud Public Link Creator" --text="Uploading files and generating a public link" --auto-kill --auto-close --percentage=0 --width=400)
-
-numOfFiles=$(find "$@" -type f | wc -l)
-count=0
-
-if baseDirExists; then
-    curl -u "$username":"$password" $curlOpts -X MKCOL "$url"
-fi
-
-# if we have more than one file selected we create a folder with
-# the current timestamp
-if [ $# -gt 1 ]; then
-    share=$(date +%s)
-    url="$url/$share"
-    curl -u "$username":"$password" $curlOpts -X MKCOL "$url"
-elif [ $# -eq 1 ]; then
-    share=$(basename "$1")
-else
-    zenity --error --title="ownCloud Public Link Creator" --text="no file was selected!"
+if baseDirNotFound; then
+    echo "Remote base dir not found"
     exit 1
 fi
 
-if uploadFiles $url "$@"; then
-    createShare "/$uploadTarget/$share"
-fi
+filePath=$(basename "$localDir")
+urlencodedFilePath=$(echo "$filePath" | sed 's/\ /%20/g')
+curl -u "$username":"$password" $curlOpts -X MKCOL "$url/$urlencodedFilePath"
+uploadDirectory "$url/$urlencodedFilePath" "$localDir"
 
-output="File uploaded successfully. Following public link was generated and copied to your clipboard: $shareLink"
-zenity --info --title="ownCloud Public Link Creator" --text="$output" --no-markup
+
+exit
